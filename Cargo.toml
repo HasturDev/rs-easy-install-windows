@@ -1,0 +1,12 @@
+[package]
+name = "rs-easy-installer-windows"
+version = "0.1.0"
+edition = "2024"
+authors = ["Ian Mizer"]
+description = "An automated installer for Rust with GNU/MSYS toolchain on Windows - downloads and installs MSYS2 automatically"
+license = "MIT"
+repository = "https://github.com/yourusername/rust-gnu-msys-installer"
+keywords = ["rust", "windows", "gnu", "msys2", "installer"]
+categories = ["development-tools", "development-tools::build-utils"]
+
+[dependencies]
