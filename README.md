@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![Windows](https://img.shields.io/badge/platform-windows-blue.svg)](https://www.microsoft.com/windows)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT)](LICENSE-MIT)
 
 A comprehensive, automated solution for installing and configuring Rust with the GNU/MSYS toolchain on Windows systems. This program handles everything from downloading MSYS2 to configuring your development environment, making it easy to get started with Rust development using Unix-compatible tools.
 
@@ -26,13 +26,14 @@ While MSVC is Microsoft's native toolchain and works great for Windows-specific 
 ## ✨ Features
 
 - **🚀 Fully Automated**: Zero manual intervention required
-- **📥 Auto-Download**: Automatically downloads and installs MSYS2 if not present
-- **⚙️ Complete Configuration**: Sets up Rust, GNU toolchain, and environment
+- **📥 Auto-Download**: Automatically downloads and installs MSYS2 and rustup if not present
+- **⚙️ Complete Configuration**: Sets up Rust, GNU toolchain, and environment from scratch
 - **✅ Verification**: Tests installation with sample compilation
 - **🔧 Smart Error Handling**: Handles common installation issues gracefully
 - **📋 Detailed Logging**: Provides clear feedback throughout the process
 - **🔄 Idempotent**: Safe to run multiple times
 - **🛡️ Safe**: Non-destructive - won't break existing installations
+- **🎯 GNU-First**: Configures GNU toolchain as the default target
 
 ## 🏗️ What This Program Does
 
@@ -46,9 +47,10 @@ While MSVC is Microsoft's native toolchain and works great for Windows-specific 
    - `mingw-w64-x86_64-pkgconf` (Package configuration)
    - `mingw-w64-x86_64-openssl` (Crypto library)
    - `mingw-w64-x86_64-make` (Build tools)
-4. **🦀 Rust Configuration**: Adds `x86_64-pc-windows-gnu` target
-5. **📁 Environment Setup**: Creates `.cargo/config.toml` with GNU settings
-6. **✅ Verification**: Compiles and runs test program
+4. **🦀 Rust Installation**: Downloads and installs rustup/Rust if not present
+5. **🎯 Target Configuration**: Adds and configures `x86_64-pc-windows-gnu` target
+6. **📁 Environment Setup**: Creates `.cargo/config.toml` with GNU settings
+7. **✅ Verification**: Compiles and runs test program
 
 ## 🚀 Quick Start
 
@@ -56,28 +58,29 @@ While MSVC is Microsoft's native toolchain and works great for Windows-specific 
 - Windows 10/11 (64-bit)
 - Internet connection
 - PowerShell (included with Windows)
-- ~2GB free disk space
+- ~3GB free disk space
+
+*Note: Rust/rustup will be installed automatically if not present*
 
 ### **Installation**
 
-1. **Clone or download this repository:**
-   ```bash
-   git clone https://github.com/yourusername/rust-gnu-msys-installer.git
-   cd rust-gnu-msys-installer
-   ```
+**Option 1: If you already have Rust installed:**
+```bash
+git clone https://github.com/yourusername/rust-gnu-msys-installer.git
+cd rust-gnu-msys-installer
+cargo build --release
+cargo run
+```
 
-2. **Build and run the installer:**
-   ```bash
-   cargo build --release
-   cargo run
-   ```
+**Option 2: If you don't have Rust yet:**
+1. Download the pre-build installer called rs-easy-installer-windows.exe
+2. Run `rs-easy-installer-windows.exe`
+3. The program will install everything for you, including Rust!
 
-3. **Follow the automated process** - the program will guide you through everything!
-
-### **Alternative: Direct Download**
-If you don't have Rust installed yet:
-1. Download the pre-built executable from [Releases](../../releases)
-2. Run `install-rust-gnu.exe`
+**Option 3: Bootstrap installation:**
+1. Download just the source code
+2. Install Rust manually from [rustup.rs](https://rustup.rs/) first
+3. Then build and run this installer
 
 ## 📋 Usage
 
@@ -87,7 +90,7 @@ If you don't have Rust installed yet:
 cargo run
 
 # Or run the release binary
-./target/release/install-rust-gnu.exe
+./target/release/rs-easy-installer-windows.exe
 ```
 
 ### **What You'll See**
@@ -105,7 +108,12 @@ Installing Core toolchain: pacman -S --noconfirm mingw-w64-x86_64-toolchain
 
 🦀 Installing Rust with GNU Target
 ----------------------------------
-✅ rustup found. Adding GNU target...
+rustup not found. Installing Rust automatically...
+📥 Downloading rustup installer...
+✅ rustup installer downloaded successfully
+🚀 Installing rustup with GNU toolchain...
+✅ rustup installation completed successfully!
+✅ Verified rustup installation: rustup 1.26.0
 ✅ x86_64-pc-windows-gnu target added successfully!
 
 🧪 Testing compilation...
@@ -213,6 +221,19 @@ Warning: pkg-config - skipped (dependency issue)
 ```
 **Solution**: This is usually harmless. Core functionality will still work.
 
+#### **rustup Installation Not Immediately Available**
+```
+Warning: rustup installed but not immediately available in PATH
+```
+**Solution**: Restart your terminal or run:
+```bash
+# On Command Prompt/PowerShell
+refreshenv
+
+# Or manually add to current session
+set PATH=%PATH%;%USERPROFILE%\.cargo\bin
+```
+
 #### **Path Issues**
 ```
 Warning: Compiled successfully but couldn't run
@@ -251,6 +272,18 @@ echo 'fn main() { println!("Hello GNU!"); }' > test.rs
 rustc test.rs --target x86_64-pc-windows-gnu
 ./test.exe
 ```
+
+## 📊 What Gets Installed
+
+| Component | Version | Purpose | Location |
+|-----------|---------|---------|----------|
+| **MSYS2** | Latest | Unix environment | `C:\msys64` |
+| **rustup** | Latest | Rust toolchain manager | `%USERPROFILE%\.cargo` |
+| **Rust** | Stable | Programming language | Via rustup |
+| **GCC Toolchain** | Latest | GNU compiler collection | Via MSYS2 |
+| **MinGW-w64** | Latest | Windows ports of GNU tools | Via MSYS2 |
+| **CMake** | Latest | Build system | Via MSYS2 |
+| **OpenSSL** | Latest | Cryptography library | Via MSYS2 |
 
 ## 📊 Comparison: GNU vs MSVC
 
@@ -315,9 +348,7 @@ Contributions are welcome! Here's how to get started:
 
 ## 📝 License
 
-This project is licensed under either of:
-
-- **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+This project is licensed under:
 - **MIT License** ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
 at your option.
