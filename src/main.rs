@@ -622,3 +622,4 @@ mod tests {
         let current_dir = std::env::current_dir().unwrap();
         assert!(current_dir.exists());
     }
+}
