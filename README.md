@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![Windows](https://img.shields.io/badge/platform-windows-blue.svg)](https://www.microsoft.com/windows)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT%20)](LICENSE)
 
 A comprehensive, automated solution for installing and configuring Rust with the GNU/MSYS toolchain on Windows systems. This program handles everything from downloading MSYS2 to configuring your development environment, making it easy to get started with Rust development using Unix-compatible tools.
 
