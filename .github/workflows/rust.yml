@@ -1,41 +1,180 @@
-name: Release
+name: Build and Release Windows
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+  
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build-and-release:
+    name: Build Windows and Create Release
     runs-on: windows-latest
     
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 
         
-      - name: Setup Rust
+      - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         
-      - name: Cache dependencies
+      - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         
-      - name: Build release
-        run: cargo build --release
+      - name: Run tests
+        run: cargo test --verbose
         
-      - name: Get project name
-        id: project
+      - name: Build release
+        run: cargo build --release --verbose
+        
+      - name: Get project info
+        id: project_info
         shell: bash
         run: |
-          NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
-          echo "name=$NAME" >> $GITHUB_OUTPUT
+          PROJECT_NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
+          PROJECT_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          PROJECT_DESCRIPTION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].description // "No description available"')
           
-      - name: Create release
+          echo "name=$PROJECT_NAME" >> $GITHUB_OUTPUT
+          echo "version=$PROJECT_VERSION" >> $GITHUB_OUTPUT
+          echo "description=$PROJECT_DESCRIPTION" >> $GITHUB_OUTPUT
+          
+          # Generate a unique release tag based on commit
+          COMMIT_SHORT=$(git rev-parse --short HEAD)
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          RELEASE_TAG="release-${TIMESTAMP}-${COMMIT_SHORT}"
+          
+          echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
+          echo "commit_short=$COMMIT_SHORT" >> $GITHUB_OUTPUT
+          echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
+          
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          PROJECT_NAME="${{ steps.project_info.outputs.name }}"
+          VERSION="${{ steps.project_info.outputs.version }}"
+          COMMIT="${{ steps.project_info.outputs.commit_short }}"
+          
+          # Create release directory
+          mkdir -p release-assets
+          
+          # Copy main executable with descriptive name
+          cp "target/release/${PROJECT_NAME}.exe" "release-assets/${PROJECT_NAME}.exe"
+          
+          # Create a simple batch file to run the program
+          cat > "release-assets/run-${PROJECT_NAME}.bat" << EOF
+          @echo off
+          echo Starting ${PROJECT_NAME}...
+          echo.
+          ${PROJECT_NAME}.exe
+          echo.
+          echo Program finished. Press any key to close...
+          pause >nul
+          EOF
+          
+          # Create a simple README for the release
+          cat > "release-assets/README.txt" << EOF
+          ${PROJECT_NAME} v${VERSION}
+          ==============================
+          
+          ${{ steps.project_info.outputs.description }}
+          
+          Files included:
+          - ${PROJECT_NAME}.exe  : Main executable
+          - run-${PROJECT_NAME}.bat      : Easy-to-use batch file
+          - README.txt                   : This file
+          
+          Quick Start:
+          1. Double-click "${PROJECT_NAME}.exe" to run directly
+          2. Or double-click "run-${PROJECT_NAME}.bat" for a nicer experience
+          
+          Built from commit: ${COMMIT}
+          Build date: ${{ steps.project_info.outputs.timestamp }}
+          
+          For more information, visit:
+          https://github.com/${{ github.repository }}
+          EOF
+          
+          # Generate checksum
+          cd release-assets
+          sha256sum *.exe > checksums.txt
+          
+      - name: Generate release notes
+        id: release_notes
+        shell: bash
+        run: |
+          # Get recent commits for release notes
+          COMMITS=$(git log --oneline --since="1 day ago" --max-count=10 | sed 's/^/- /' || echo "- Initial release")
+          
+          # Create release notes
+          cat > release_notes.md << EOF
+          # ${{ steps.project_info.outputs.name }} Windows Release
+          
+          **Version:** ${{ steps.project_info.outputs.version }}  
+          **Build:** ${{ steps.project_info.outputs.commit_short }}  
+          **Date:** $(date '+%Y-%m-%d %H:%M:%S UTC')
+          
+          ## 📝 Description
+          
+          ${{ steps.project_info.outputs.description }}
+          
+          ## 📥 Download
+          
+          - **${{ steps.project_info.outputs.name }}.exe** - Main executable (recommended)
+          - **run-${{ steps.project_info.outputs.name }}.bat** - Batch file for easy running
+          - **checksums.txt** - SHA256 checksums for verification
+          
+          ## 🚀 Quick Start
+          
+          1. Download \`${{ steps.project_info.outputs.name }}.exe\`
+          2. Double-click to run, or use the provided batch file
+          3. Follow the on-screen instructions
+          
+          ## 🔐 Verification
+          
+          Verify your download:
+          \`\`\`bash
+          sha256sum -c checksums.txt
+          \`\`\`
+          
+          ## 📋 Recent Changes
+          
+          $COMMITS
+          
+          ---
+          
+          **Repository:** https://github.com/${{ github.repository }}  
+          **Issues:** https://github.com/${{ github.repository }}/issues
+          EOF
+          
+      - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: target/release/${{ steps.project.outputs.name }}.exe
-          generate_release_notes: true
+          tag_name: ${{ steps.project_info.outputs.release_tag }}
+          name: "${{ steps.project_info.outputs.name }} v${{ steps.project_info.outputs.version }} (Build ${{ steps.project_info.outputs.commit_short }})"
+          body_path: release_notes.md
+          files: release-assets/*
+          draft: false
+          prerelease: false
+          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Upload build artifacts (for debugging)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-${{ steps.project_info.outputs.commit_short }}
+          path: release-assets/
+          retention-days: 7
