@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "rs-easy-installer-windows"
+name = "rs-easy-install-windows"
 version = "0.1.0"

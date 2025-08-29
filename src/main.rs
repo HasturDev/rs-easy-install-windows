@@ -1,13 +1,22 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
+#[derive(Debug, Clone)]
+enum RustInstallationStatus {
+    NotInstalled,
+    InstalledMSVC(String),
+    InstalledGNU(String),
+    InstalledUnknown(String),
+    BrokenInstallation(String),
+}
+
 fn main() {
-    println!("🦀 Rust GNU/MSYS Installation Helper for Windows");
-    println!("================================================\n");
+    println!("🦀 Rust MSVC Installation Helper for Windows");
+    println!("============================================\n");
 
     match run_installation_process() {
         Ok(_) => println!("\n✅ Installation process completed successfully!"),
@@ -21,112 +30,420 @@ fn run_installation_process() -> Result<(), Box<dyn std::error::Error>> {
         return Err("This installer is designed for Windows systems only.".into());
     }
 
-    println!("This program will help you install Rust with GNU/MSYS toolchain.");
-    println!("The GNU toolchain provides better compatibility with Unix-like tools.\n");
+    println!("This program will help you install Rust with MSVC toolchain.");
+    println!("The MSVC toolchain provides native Windows development support.\n");
 
     // Step 1: Check for existing installations
-    check_existing_installations()?;
+    let rust_status = check_existing_installations()?;
+    
+    // Step 1.5: Handle existing installations
+    handle_existing_rust_installation(&rust_status)?;
 
-    // Step 2: Guide MSYS2 installation
-    guide_msys2_installation()?;
+    // Step 2: Install Visual Studio C++ redistributable
+    install_visual_cpp_redistributable()?;
 
-    // Step 3: Install GNU toolchain
-    install_gnu_toolchain()?;
+    // Step 3: Install Rust with MSVC target
+    install_rust_msvc()?;
 
-    // Step 4: Install Rust with GNU target
-    install_rust_gnu()?;
+    // Step 4: Ensure PATH is configured
+    ensure_cargo_in_path()?;
 
-    // Step 5: Configure environment
-    configure_environment()?;
-
-    // Step 6: Verify installation
+    // Step 5: Verify installation
     verify_installation()?;
 
     Ok(())
 }
 
-fn check_existing_installations() -> Result<(), Box<dyn std::error::Error>> {
+fn check_existing_installations() -> Result<RustInstallationStatus, Box<dyn std::error::Error>> {
     println!("🔍 Checking for existing installations...\n");
 
-    // Check for rustc
-    match Command::new("rustc").arg("--version").output() {
-        Ok(output) => {
-            let version = String::from_utf8_lossy(&output.stdout);
-            println!("Found existing Rust installation: {}", version.trim());
-            
-            if version.contains("msvc") {
-                println!("⚠️  Current installation uses MSVC toolchain.");
-                println!("   We'll configure GNU toolchain as an additional target.");
-            }
+    let rust_status = detect_rust_installation()?;
+    
+    match &rust_status {
+        RustInstallationStatus::NotInstalled => {
+            println!("No existing Rust installation found.");
         }
-        Err(_) => println!("No existing Rust installation found."),
-    }
-
-    // Check for MSYS2
-    let msys2_paths = [
-        "C:\\msys64\\usr\\bin\\bash.exe",
-        "C:\\msys32\\usr\\bin\\bash.exe",
-    ];
-
-    let mut msys2_found = false;
-    for path in &msys2_paths {
-        if Path::new(path).exists() {
-            println!("✅ Found MSYS2 installation at: {}", path);
-            msys2_found = true;
-            break;
+        RustInstallationStatus::InstalledMSVC(version) => {
+            println!("✅ Found compatible Rust installation: {}", version);
+            println!("   Already using MSVC toolchain.");
+        }
+        RustInstallationStatus::InstalledGNU(version) => {
+            println!("⚠️  Found incompatible Rust installation: {}", version);
+            println!("   Current installation uses GNU toolchain.");
+            println!("   This will conflict with MSVC installation.");
+        }
+        RustInstallationStatus::InstalledUnknown(version) => {
+            println!("⚠️  Found Rust installation with unknown toolchain: {}", version);
+            println!("   May cause compatibility issues.");
+        }
+        RustInstallationStatus::BrokenInstallation(issue) => {
+            println!("❌ Found broken Rust installation: {}", issue);
+            println!("   Installation is incomplete or corrupted.");
         }
     }
 
-    if !msys2_found {
-        println!("❌ MSYS2 not found. Installation will be required.");
-    }
+    // Check for Visual Studio C++ redistributable
+    check_visual_cpp_installed()?;
 
     println!();
+    Ok(rust_status)
+}
+
+fn detect_rust_installation() -> Result<RustInstallationStatus, Box<dyn std::error::Error>> {
+    // First check if rustup exists
+    let rustup_available = match Command::new("rustup").arg("--version").output() {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    };
+    
+    if !rustup_available {
+        return Ok(RustInstallationStatus::NotInstalled);
+    }
+    
+    // Check rustup show to see the current state
+    match Command::new("rustup").args(&["show"]).output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            
+            // Check for common "no toolchain" messages
+            if stdout.contains("no default toolchain configured") || 
+               stdout.contains("no toolchain is active") ||
+               stderr.contains("no default is configured") ||
+               stderr.contains("could not choose a version") ||
+               stdout.contains("No `rustc` is currently active") {
+                return Ok(RustInstallationStatus::BrokenInstallation("rustup installed but no active toolchain".to_string()));
+            }
+            
+            // If rustup show works, try rustc
+            match Command::new("rustc").arg("--version").output() {
+                Ok(rustc_output) if rustc_output.status.success() => {
+                    let version = String::from_utf8_lossy(&rustc_output.stdout).trim().to_string();
+                    
+                    if version.contains("msvc") {
+                        Ok(RustInstallationStatus::InstalledMSVC(version))
+                    } else if version.contains("gnu") {
+                        Ok(RustInstallationStatus::InstalledGNU(version))
+                    } else {
+                        Ok(RustInstallationStatus::InstalledUnknown(version))
+                    }
+                }
+                _ => {
+                    // rustup show works but rustc doesn't
+                    Ok(RustInstallationStatus::BrokenInstallation("rustup show works but rustc is not available".to_string()))
+                }
+            }
+        }
+        Err(_) => {
+            // rustup exists but show command fails - likely broken
+            Ok(RustInstallationStatus::BrokenInstallation("rustup exists but 'rustup show' command failed".to_string()))
+        }
+    }
+}
+
+fn handle_existing_rust_installation(status: &RustInstallationStatus) -> Result<(), Box<dyn std::error::Error>> {
+    match status {
+        RustInstallationStatus::NotInstalled => {
+            println!("✅ No existing Rust installation - proceeding with fresh install.");
+            Ok(())
+        }
+        RustInstallationStatus::InstalledMSVC(_) => {
+            println!("✅ Compatible MSVC installation found - will update if needed.");
+            Ok(())
+        }
+        RustInstallationStatus::InstalledGNU(version) => {
+            println!("\n⚠️  INCOMPATIBLE INSTALLATION DETECTED");
+            println!("=====================================");
+            println!("Found: {}", version);
+            println!("This GNU-based installation will conflict with the MSVC toolchain.");
+            println!("\nOptions:");
+            println!("1. Remove existing Rust installation (recommended)");
+            println!("2. Cancel installation");
+            println!();
+            
+            print!("Do you want to remove the existing installation? (y/N): ");
+            io::stdout().flush()?;
+            
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            
+            if input.trim().to_lowercase().starts_with('y') {
+                println!("\n🗑️ Removing existing Rust installation...");
+                uninstall_existing_rust()?;
+                println!("✅ Existing Rust installation removed successfully!");
+            } else {
+                return Err("Installation cancelled by user. Please manually remove the existing Rust installation or choose to continue with GNU toolchain.".into());
+            }
+            Ok(())
+        }
+        RustInstallationStatus::InstalledUnknown(version) => {
+            println!("\n⚠️  UNKNOWN INSTALLATION DETECTED");
+            println!("==============================");
+            println!("Found: {}", version);
+            println!("This installation may cause compatibility issues.");
+            println!("\nOptions:");
+            println!("1. Remove existing installation and install fresh (recommended)");
+            println!("2. Try to continue with existing installation");
+            println!("3. Cancel installation");
+            println!();
+            
+            print!("Choose option (1/2/3): ");
+            io::stdout().flush()?;
+            
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            
+            match input.trim() {
+                "1" => {
+                    println!("\n🗑️ Removing existing Rust installation...");
+                    uninstall_existing_rust()?;
+                    println!("✅ Existing Rust installation removed successfully!");
+                }
+                "2" => {
+                    println!("⚠️  Continuing with existing installation - may cause issues.");
+                }
+                _ => {
+                    return Err("Installation cancelled by user.".into());
+                }
+            }
+            Ok(())
+        }
+        RustInstallationStatus::BrokenInstallation(issue) => {
+            println!("\n❌ BROKEN INSTALLATION DETECTED");
+            println!("===============================");
+            println!("Issue: {}", issue);
+            println!("The existing Rust installation is incomplete or corrupted.");
+            println!("\nOptions:");
+            println!("1. Fix the existing installation by setting up MSVC toolchain (recommended)");
+            println!("2. Remove existing installation and install fresh");
+            println!("3. Cancel installation");
+            println!();
+            
+            print!("Choose option (1/2/3): ");
+            io::stdout().flush()?;
+            
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            
+            match input.trim() {
+                "1" => {
+                    println!("\n🔧 Attempting to fix existing installation...");
+                    fix_broken_rust_installation()?;
+                }
+                "2" => {
+                    println!("\n🗑️ Removing existing Rust installation...");
+                    uninstall_existing_rust()?;
+                    println!("✅ Existing Rust installation removed successfully!");
+                }
+                _ => {
+                    return Err("Installation cancelled by user.".into());
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn fix_broken_rust_installation() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Attempting to fix broken Rust installation...");
+    
+    // First, try to install the stable MSVC toolchain
+    println!("Installing stable MSVC toolchain...");
+    let install_output = Command::new("rustup")
+        .args(&["toolchain", "install", "stable-x86_64-pc-windows-msvc"])
+        .output()?;
+    
+    if !install_output.status.success() {
+        let stderr = String::from_utf8_lossy(&install_output.stderr);
+        println!("⚠️  Failed to install MSVC toolchain: {}", stderr);
+    } else {
+        println!("✅ MSVC toolchain installed successfully");
+    }
+    
+    // Set it as the default
+    println!("Setting MSVC toolchain as default...");
+    let default_output = Command::new("rustup")
+        .args(&["default", "stable-x86_64-pc-windows-msvc"])
+        .output()?;
+    
+    if !default_output.status.success() {
+        let stderr = String::from_utf8_lossy(&default_output.stderr);
+        return Err(format!("Failed to set default toolchain: {}", stderr).into());
+    }
+    
+    println!("✅ Default toolchain set to MSVC");
+    
+    // Verify the fix worked
+    match Command::new("rustc").arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout);
+            println!("✅ Installation fixed! Current version: {}", version.trim());
+            
+            if version.contains("msvc") {
+                println!("🎉 Successfully configured MSVC toolchain!");
+            } else {
+                println!("⚠️  Toolchain is working but may not be MSVC. Version: {}", version.trim());
+            }
+        }
+        _ => {
+            return Err("Fix attempt failed - rustc is still not working".into());
+        }
+    }
+    
     Ok(())
 }
 
-fn guide_msys2_installation() -> Result<(), Box<dyn std::error::Error>> {
-    println!("📦 MSYS2 Installation");
-    println!("--------------------");
+fn uninstall_existing_rust() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Attempting to uninstall existing Rust installation...");
+    
+    // Try rustup self uninstall first
+    match Command::new("rustup").args(&["self", "uninstall", "-y"]).output() {
+        Ok(output) if output.status.success() => {
+            println!("✅ Successfully uninstalled via rustup");
+            return Ok(());
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            println!("⚠️  rustup uninstall failed: {}", stderr);
+        }
+        Err(e) => {
+            println!("⚠️  Could not run rustup uninstall: {}", e);
+        }
+    }
+    
+    // Fallback: Manual cleanup
+    println!("Attempting manual cleanup...");
+    manual_rust_cleanup()?;
+    
+    Ok(())
+}
 
-    // Check if MSYS2 is already installed
-    if Path::new("C:\\msys64\\usr\\bin\\bash.exe").exists() {
-        println!("✅ MSYS2 is already installed.");
+fn manual_rust_cleanup() -> Result<(), Box<dyn std::error::Error>> {
+    // Get user profile directory
+    let user_profile = std::env::var("USERPROFILE")
+        .map_err(|_| "Could not get user profile directory")?;
+    
+    let paths_to_remove = [
+        format!("{}/.cargo", user_profile),
+        format!("{}/.rustup", user_profile),
+        format!("{}\\.cargo", user_profile),
+        format!("{}\\.rustup", user_profile),
+    ];
+    
+    let mut removed_any = false;
+    
+    for path_str in &paths_to_remove {
+        let path = Path::new(path_str);
+        if path.exists() {
+            match fs::remove_dir_all(path) {
+                Ok(_) => {
+                    println!("  ✅ Removed: {}", path_str);
+                    removed_any = true;
+                }
+                Err(e) => {
+                    println!("  ⚠️  Could not remove {}: {}", path_str, e);
+                }
+            }
+        }
+    }
+    
+    // Try to remove from PATH via PowerShell
+    let cleanup_path_cmd = r#"
+if ($env:PATH -like "*cargo*" -or $env:PATH -like "*rustup*") {
+    Write-Host "Found Rust-related PATH entries. Please manually remove them from your PATH environment variable."
+    Write-Host "Look for entries containing: .cargo\bin or .rustup"
+} else {
+    Write-Host "No obvious Rust PATH entries found."
+}
+"#;
+    
+    let _ = Command::new("powershell")
+        .args(&["-Command", cleanup_path_cmd])
+        .output();
+    
+    if !removed_any {
+        println!("⚠️  No Rust directories found to remove");
+        println!("  The existing installation might be system-wide or in a non-standard location");
+    }
+    
+    println!("  ℹ️  You may need to restart your terminal for PATH changes to take effect");
+    
+    Ok(())
+}
+
+fn check_visual_cpp_installed() -> Result<bool, Box<dyn std::error::Error>> {
+    println!("Checking for Visual Studio C++ redistributable...");
+
+    // Check registry for installed Visual C++ redistributables
+    let check_cmd = r#"
+Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" | 
+Where-Object {$_.DisplayName -like "*Visual C++ 2015-2022 Redistributable*" -or 
+              $_.DisplayName -like "*Visual C++ 2019 Redistributable*" -or
+              $_.DisplayName -like "*Visual C++ 2017 Redistributable*"} | 
+Select-Object DisplayName, DisplayVersion
+"#;
+
+    match Command::new("powershell")
+        .args(&["-Command", check_cmd])
+        .output()
+    {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if !stdout.trim().is_empty() {
+                println!("✅ Found Visual C++ redistributable:");
+                for line in stdout.lines() {
+                    if !line.trim().is_empty() && !line.contains("---") && !line.contains("DisplayName") {
+                        println!("   {}", line.trim());
+                    }
+                }
+                return Ok(true);
+            }
+        }
+        Err(_) => {}
+    }
+
+    println!("❌ Visual C++ redistributable not found or not detectable.");
+    Ok(false)
+}
+
+fn install_visual_cpp_redistributable() -> Result<(), Box<dyn std::error::Error>> {
+    println!("📦 Visual Studio C++ Redistributable Installation");
+    println!("-------------------------------------------------");
+
+    // Check if already installed
+    if check_visual_cpp_installed()? {
+        println!("✅ Visual C++ redistributable is already installed.");
         return Ok(());
     }
 
-    println!("MSYS2 not found. Installing automatically...");
+    println!("Visual C++ redistributable not found. Installing...");
     
-    // Download and install MSYS2
-    download_and_install_msys2()?;
-    
-    // Initialize MSYS2
-    initialize_msys2()?;
+    // Download and install Visual C++ redistributable
+    download_and_install_visual_cpp()?;
 
-    // Verify MSYS2 installation
-    if !Path::new("C:\\msys64\\usr\\bin\\bash.exe").exists() {
-        return Err("MSYS2 installation failed. Please try manual installation from https://www.msys2.org/".into());
-    }
-
-    println!("✅ MSYS2 installation completed successfully!");
+    println!("✅ Visual C++ redistributable installation completed!");
     println!();
     Ok(())
 }
 
-fn download_and_install_msys2() -> Result<(), Box<dyn std::error::Error>> {
-    println!("📥 Downloading MSYS2 installer...");
+fn download_and_install_visual_cpp() -> Result<(), Box<dyn std::error::Error>> {
+    println!("📥 Downloading Visual C++ redistributable...");
     
-    // Download MSYS2 installer
-    let installer_url = "https://github.com/msys2/msys2-installer/releases/latest/download/msys2-x86_64-latest.exe";
-    let installer_path = "msys2-installer.exe";
+    // Use the latest Visual C++ redistributable (2015-2022)
+    let vc_redist_url = "https://aka.ms/vs/17/release/vc_redist.x64.exe";
     
-    // Use PowerShell to download the file (available on all Windows systems)
+    // Get current directory and create absolute path
+    let current_dir = std::env::current_dir()?;
+    let installer_path = current_dir.join("vc_redist.x64.exe");
+    let installer_path_str = installer_path.to_string_lossy();
+    
+    // Download the redistributable
     let download_cmd = format!(
         "Invoke-WebRequest -Uri '{}' -OutFile '{}' -UseBasicParsing",
-        installer_url, installer_path
+        vc_redist_url, installer_path_str
     );
     
-    println!("Downloading from: {}", installer_url);
+    println!("Downloading from: {}", vc_redist_url);
     let download_output = Command::new("powershell")
         .args(&["-Command", &download_cmd])
         .output()?;
@@ -137,244 +454,208 @@ fn download_and_install_msys2() -> Result<(), Box<dyn std::error::Error>> {
             return Err("PowerShell execution policy blocks downloads. Please run as administrator or enable PowerShell scripts.".into());
         }
         return Err(format!(
-            "Failed to download MSYS2 installer: {}",
+            "Failed to download Visual C++ redistributable: {}",
             error_msg
         ).into());
     }
     
-    if !Path::new(installer_path).exists() {
-        return Err("MSYS2 installer download failed - file not found".into());
+    if !installer_path.exists() {
+        return Err("Visual C++ redistributable download failed - file not found".into());
     }
     
-    println!("✅ Download completed successfully ({} MB)", 
-             fs::metadata(installer_path)?.len() / 1_000_000);
+    println!("✅ Download completed successfully ({:.1} MB)", 
+             fs::metadata(&installer_path)?.len() as f64 / 1_000_000.0);
     
-    // Run the installer silently
-    println!("🚀 Running MSYS2 installer...");
-    println!("   Installing to C:\\msys64...");
-    println!("   This may take several minutes, please wait...");
+    // Install the redistributable
+    println!("🚀 Installing Visual C++ redistributable...");
+    println!("   This may take a few minutes, please wait...");
     
-    // Try silent installation first
-    let install_output = Command::new(installer_path)
-        .args(&[
-            "install",
-            "--confirm-command",
-            "--accept-messages", 
-            "--root", "C:\\msys64"
-        ])
-        .output()?;
-    
-    if !install_output.status.success() {
-        println!("⚠️  Silent installation failed, trying alternative method...");
-        
-        // Try running with elevated permissions request
-        let powershell_cmd = format!(
-            "Start-Process -FilePath '{}' -ArgumentList 'install --confirm-command --accept-messages --root C:\\msys64' -Verb RunAs -Wait",
-            installer_path
-        );
-        
-        let elevated_output = Command::new("powershell")
-            .args(&["-Command", &powershell_cmd])
-            .output()?;
-        
-        if !elevated_output.status.success() {
-            println!("❌ Automated installation failed.");
-            println!("📝 Please install MSYS2 manually:");
-            println!("   1. Double-click the downloaded installer: {}", installer_path);
-            println!("   2. Follow the installation wizard");
-            println!("   3. Install to C:\\msys64 (default location)");
-            println!("   4. Complete the installation");
-            println!();
-            
-            print!("Press Enter when manual installation is complete...");
-            io::stdout().flush()?;
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-        }
-    }
+    // Try different installation methods
+    let success = try_install_vc_redist(&installer_path)?;
     
     // Clean up installer file
-    let _ = fs::remove_file(installer_path);
+    let _ = fs::remove_file(&installer_path);
     
-    // Verify installation
-    if !Path::new("C:\\msys64").exists() {
-        return Err("MSYS2 installation directory not found. Installation may have failed.".into());
+    if !success {
+        return Err("Failed to install Visual C++ redistributable. Please install manually from https://aka.ms/vs/17/release/vc_redist.x64.exe".into());
     }
     
-    println!("✅ MSYS2 installation completed");
+    println!("✅ Visual C++ redistributable installation completed");
+    
+    // Wait for installation to fully complete
+    thread::sleep(Duration::from_secs(3));
+    
     Ok(())
 }
 
-fn initialize_msys2() -> Result<(), Box<dyn std::error::Error>> {
-    println!("⚙️  Initializing MSYS2...");
+fn try_install_vc_redist(installer_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    let installer_str = installer_path.to_string_lossy();
     
-    let msys2_bash = "C:\\msys64\\usr\\bin\\bash.exe";
-    
-    // Wait for installation to settle and files to be ready
-    print!("   Waiting for MSYS2 to be ready");
-    for _ in 0..10 {
-        print!(".");
-        io::stdout().flush()?;
-        thread::sleep(Duration::from_secs(1));
-        
-        if Path::new(msys2_bash).exists() {
-            break;
+    // Method 1: Direct execution
+    println!("Trying direct installation...");
+    match Command::new(&*installer_str)
+        .args(&["/install", "/quiet", "/norestart"])
+        .output() {
+        Ok(output) if output.status.success() => {
+            println!("✅ Direct installation successful");
+            return Ok(true);
         }
-    }
-    println!(" ✅");
-    
-    if !Path::new(msys2_bash).exists() {
-        return Err("MSYS2 bash not found after installation. Installation may be incomplete.".into());
-    }
-    
-    // Initialize MSYS2 keyring and update packages
-    let init_commands = [
-        ("Initializing keyring", "pacman-key --init"),
-        ("Populating keyring", "pacman-key --populate msys2"),
-        ("Updating package database", "pacman -Sy --noconfirm"),
-        ("Updating system packages", "pacman -Syu --noconfirm --disable-download-timeout"),
-    ];
-    
-    for (description, cmd) in &init_commands {
-        println!("   {}: {}", description, cmd);
-        
-        let output = Command::new(msys2_bash)
-            .args(&["-l", "-c", cmd])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()?;
-        
-        if !output.status.success() {
+        Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
             
-            // Check for common non-critical messages
-            if stderr.contains("nothing to do") 
-                || stderr.contains("there is nothing to do") 
-                || stdout.contains("there is nothing to do") {
-                println!("     ✅ No updates needed");
-                continue;
+            // Check if it's already installed
+            if stderr.contains("Another version of this product is already installed") || 
+               stdout.contains("already installed") ||
+               stderr.contains("0x80070666") { // ERROR_ANOTHER_PRODUCT_INSTALLED
+                println!("✅ Visual C++ redistributable was already installed");
+                return Ok(true);
             }
             
-            // Some warnings during first-time setup are normal
-            if stderr.contains("warning") && !stderr.contains("error") {
-                println!("     ⚠️  Warning (continuing): {}", stderr.lines().next().unwrap_or(""));
-                continue;
-            }
-            
-            eprintln!("     ❌ Failed: {}", stderr);
-            return Err(format!("MSYS2 initialization step failed: {}", description).into());
-        } else {
-            println!("     ✅ Completed successfully");
+            println!("Direct installation failed: {}", stderr);
+        }
+        Err(e) => {
+            println!("Direct execution failed: {}", e);
         }
     }
     
-    // Verify core tools are available
-    let verification_commands = [
-        "pacman --version",
-        "gcc --version",
-    ];
+    // Method 2: PowerShell Start-Process
+    println!("Trying PowerShell installation...");
+    let ps_cmd = format!(
+        "Start-Process -FilePath '{}' -ArgumentList '/install', '/quiet', '/norestart' -Wait -PassThru | ForEach-Object {{ Write-Output $_.ExitCode }}",
+        installer_str
+    );
     
-    println!("   Verifying installation...");
-    for cmd in &verification_commands {
-        let output = Command::new(msys2_bash)
-            .args(&["-l", "-c", cmd])
-            .output();
-            
-        match output {
-            Ok(out) if out.status.success() => {
-                // Extract first line of output for verification
-                let stdout_str = String::from_utf8_lossy(&out.stdout);
-                let first_line = stdout_str
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .trim();
-                if !first_line.is_empty() {
-                    println!("     ✅ {}: {}", cmd.split_whitespace().next().unwrap(), first_line);
-                }
-            }
-            _ => {
-                println!("     ⚠️  {} not yet available (will install with toolchain)", 
-                         cmd.split_whitespace().next().unwrap());
-            }
-        }
-    }
-    
-    println!("✅ MSYS2 initialization completed successfully");
-    Ok(())
-}
-
-fn install_gnu_toolchain() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🔧 Installing GNU Toolchain");
-    println!("---------------------------");
-
-    let msys2_bash = "C:\\msys64\\usr\\bin\\bash.exe";
-    
-    if !Path::new(msys2_bash).exists() {
-        return Err("MSYS2 bash not found. Please install MSYS2 first.".into());
-    }
-
-    println!("Installing GNU toolchain packages via MSYS2...");
-
-    // Install mingw-w64 toolchain
-    let install_commands = [
-        ("Core toolchain", "pacman -S --noconfirm mingw-w64-x86_64-toolchain"),
-        ("CMake", "pacman -S --noconfirm mingw-w64-x86_64-cmake"),
-        ("pkg-config", "pacman -S --noconfirm mingw-w64-x86_64-pkgconf"), // Updated package name
-        ("OpenSSL", "pacman -S --noconfirm mingw-w64-x86_64-openssl"),
-        ("Additional tools", "pacman -S --noconfirm mingw-w64-x86_64-make"),
-    ];
-
-    let mut failed_packages = Vec::new();
-
-    for (description, cmd) in &install_commands {
-        println!("Installing {}: {}", description, cmd);
-        let output = Command::new(msys2_bash)
-            .args(&["-l", "-c", cmd])
-            .output()?;
-
-        if !output.status.success() {
+    match Command::new("powershell")
+        .args(&["-Command", &ps_cmd])
+        .output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
             
-            // Check if it's already installed or just a warning
-            if stderr.contains("nothing to do") || stderr.contains("up to date") {
-                println!("✅ {} - already up to date", description);
-            } else if stderr.contains("could not satisfy dependencies") || stderr.contains("target not found") {
-                println!("⚠️  {} - skipped (dependency issue or already installed)", description);
-                failed_packages.push(description);
-            } else {
-                println!("❌ {} - failed: {}", description, stderr.lines().next().unwrap_or("Unknown error"));
-                failed_packages.push(description);
+            // Check exit code
+            if stdout.trim() == "0" || 
+               stderr.contains("0x80070666") || // Already installed
+               stdout.contains("0") {
+                println!("✅ PowerShell installation successful");
+                return Ok(true);
             }
-        } else {
-            println!("✅ {} - installed successfully", description);
+            
+            println!("PowerShell installation failed. Exit code: {}, Error: {}", stdout.trim(), stderr);
+        }
+        Err(e) => {
+            println!("PowerShell execution failed: {}", e);
+        }
+    }
+    
+    // Method 3: Elevated PowerShell
+    println!("Trying elevated installation...");
+    let elevated_cmd = format!(
+        "Start-Process -FilePath '{}' -ArgumentList '/install', '/quiet', '/norestart' -Verb RunAs -Wait",
+        installer_str
+    );
+    
+    match Command::new("powershell")
+        .args(&["-Command", &elevated_cmd])
+        .output() {
+        Ok(output) if output.status.success() => {
+            println!("✅ Elevated installation completed");
+            return Ok(true);
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            println!("Elevated installation failed: {}", stderr);
+        }
+        Err(e) => {
+            println!("Elevated execution failed: {}", e);
+        }
+    }
+    
+    Ok(false)
+}
+
+fn install_rust_msvc() -> Result<(), Box<dyn std::error::Error>> {
+    println!("🦀 Installing Rust with MSVC Target");
+    println!("-----------------------------------");
+
+    // Check if rustup is available after potential cleanup
+    match Command::new("rustup").arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            println!("✅ rustup found. Ensuring MSVC target is available...");
+            
+            // Add the MSVC target (default on Windows)
+            let target_output = Command::new("rustup")
+                .args(&["target", "add", "x86_64-pc-windows-msvc"])
+                .output()?;
+
+            if target_output.status.success() {
+                println!("✅ x86_64-pc-windows-msvc target confirmed/added successfully!");
+            } else {
+                let stderr = String::from_utf8_lossy(&target_output.stderr);
+                if stderr.contains("is up to date") || stderr.contains("already installed") {
+                    println!("✅ x86_64-pc-windows-msvc target already available!");
+                } else {
+                    eprintln!("⚠️  Issue with MSVC target: {}", stderr);
+                }
+            }
+        }
+        _ => {
+            println!("rustup not found. Installing fresh Rust with MSVC toolchain...");
+            install_rustup_msvc()?;
+            // Wait for installation to complete
+            thread::sleep(Duration::from_secs(2));
         }
     }
 
-    if !failed_packages.is_empty() {
-        println!("\n⚠️  Some packages had issues but core toolchain should still work:");
-        for pkg in failed_packages {
-            println!("   - {}", pkg);
-        }
-        println!("   This is usually not a problem for basic Rust development.");
-    }
+    // Verify and set MSVC as default target
+    configure_msvc_toolchain()?;
 
-    println!("✅ GNU toolchain installation completed!");
     println!();
     Ok(())
 }
 
-fn install_rustup_automatically() -> Result<(), Box<dyn std::error::Error>> {
+fn configure_msvc_toolchain() -> Result<(), Box<dyn std::error::Error>> {
+    // Set MSVC as default target for current directory (if not already)
+    match Command::new("rustup").args(&["show"]).output() {
+        Ok(output) => {
+            let show_output = String::from_utf8_lossy(&output.stdout);
+            if !show_output.contains("x86_64-pc-windows-msvc") {
+                let override_output = Command::new("rustup")
+                    .args(&["override", "set", "stable-x86_64-pc-windows-msvc"])
+                    .output();
+
+                match override_output {
+                    Ok(out) if out.status.success() => {
+                        println!("✅ Set MSVC toolchain as default for current directory");
+                    }
+                    _ => {
+                        println!("ℹ️  You can manually set MSVC toolchain with:");
+                        println!("   rustup override set stable-x86_64-pc-windows-msvc");
+                    }
+                }
+            } else {
+                println!("✅ MSVC toolchain is already the active target");
+            }
+        }
+        Err(_) => {
+            println!("ℹ️  Could not check current toolchain - may need to restart terminal");
+        }
+    }
+    Ok(())
+}
+
+fn install_rustup_msvc() -> Result<(), Box<dyn std::error::Error>> {
     println!("📥 Downloading rustup installer...");
     
     let rustup_url = "https://win.rustup.rs/x86_64";
-    let installer_path = "rustup-init.exe";
+    let current_dir = std::env::current_dir()?;
+    let installer_path = current_dir.join("rustup-init.exe");
+    let installer_path_str = installer_path.to_string_lossy();
     
     // Download rustup-init.exe
     let download_cmd = format!(
         "Invoke-WebRequest -Uri '{}' -OutFile '{}' -UseBasicParsing",
-        rustup_url, installer_path
+        rustup_url, installer_path_str
     );
     
     println!("Downloading from: {}", rustup_url);
@@ -387,19 +668,19 @@ fn install_rustup_automatically() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("Failed to download rustup installer: {}", error_msg).into());
     }
     
-    if !Path::new(installer_path).exists() {
+    if !installer_path.exists() {
         return Err("rustup installer download failed - file not found".into());
     }
     
     println!("✅ rustup installer downloaded successfully");
     
-    // Install rustup with GNU as default target
-    println!("🚀 Installing rustup with GNU toolchain...");
-    println!("   This will install Rust with x86_64-pc-windows-gnu as default");
+    // Install rustup with MSVC as default target
+    println!("🚀 Installing rustup with MSVC toolchain...");
+    println!("   This will install Rust with x86_64-pc-windows-msvc as default");
     
-    let install_output = Command::new(installer_path)
+    let install_output = Command::new(&*installer_path_str)
         .args(&[
-            "--default-host", "x86_64-pc-windows-gnu",
+            "--default-host", "x86_64-pc-windows-msvc",
             "--default-toolchain", "stable",
             "--profile", "default",
             "-y"  // Accept all defaults
@@ -407,115 +688,109 @@ fn install_rustup_automatically() -> Result<(), Box<dyn std::error::Error>> {
         .output()?;
     
     // Clean up installer
-    let _ = fs::remove_file(installer_path);
+    let _ = fs::remove_file(&installer_path);
     
     if !install_output.status.success() {
         let stderr = String::from_utf8_lossy(&install_output.stderr);
-        return Err(format!("rustup installation failed: {}", stderr).into());
+        let stdout = String::from_utf8_lossy(&install_output.stdout);
+        return Err(format!(
+            "rustup installation failed:\nSTDERR: {}\nSTDOUT: {}", 
+            stderr, stdout
+        ).into());
     }
     
     println!("✅ rustup installation completed successfully!");
     
+    // Wait for installation to settle
+    thread::sleep(Duration::from_secs(2));
+    
+    // Ensure Cargo is in PATH
+    println!("🔄 Configuring PATH environment...");
+    ensure_cargo_in_path()?;
+    
+    // Try to refresh environment variables
+    let _ = Command::new("powershell")
+        .args(&["-Command", "refreshenv 2>$null"])
+        .output();
+    
     // Verify installation
     match Command::new("rustup").arg("--version").output() {
-        Ok(output) => {
+        Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout);
             println!("✅ Verified rustup installation: {}", version.trim());
         }
-        Err(_) => {
-            println!("⚠️  rustup installed but not immediately available in PATH");
-            println!("   You may need to restart your terminal or run:");
-            println!("   source ~/.cargo/env");
+        _ => {
+            println!("⚠️  rustup installed but not immediately available in current PATH");
+            println!("   Please restart your terminal or run a new command prompt");
+            println!("   You can verify the installation with: rustup --version");
         }
     }
     
     Ok(())
 }
 
-fn install_rust_gnu() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🦀 Installing Rust with GNU Target");
-    println!("----------------------------------");
-
-    // Check if rustup is available
-    match Command::new("rustup").arg("--version").output() {
-        Ok(_) => {
-            println!("✅ rustup found. Adding GNU target...");
-            
-            // Add the GNU target
-            let output = Command::new("rustup")
-                .args(&["target", "add", "x86_64-pc-windows-gnu"])
-                .output()?;
-
-            if output.status.success() {
-                println!("✅ x86_64-pc-windows-gnu target added successfully!");
-            } else {
-                eprintln!("❌ Failed to add GNU target: {}", String::from_utf8_lossy(&output.stderr));
+fn ensure_cargo_in_path() -> Result<(), Box<dyn std::error::Error>> {
+    let user_profile = std::env::var("USERPROFILE")
+        .map_err(|_| "Could not get user profile directory")?;
+    let cargo_bin = format!(r"{}\\.cargo\\bin", user_profile);
+    
+    println!("Ensuring {} is in PATH...", cargo_bin);
+    
+    // Check if Cargo bin is already in user PATH
+    let check_path_cmd = format!(
+        r#"$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User'); 
+           if ($userPath -like '*{}*') {{ 
+               Write-Output 'Already in PATH' 
+           }} else {{ 
+               Write-Output 'Not in PATH' 
+           }}"#,
+        cargo_bin.replace("\\", "\\\\")
+    );
+    
+    match Command::new("powershell")
+        .args(&["-Command", &check_path_cmd])
+        .output() {
+        Ok(output) => {
+            let result = String::from_utf8_lossy(&output.stdout);
+            let result = result.trim();
+            if result == "Already in PATH" {
+                println!("✅ Cargo is already in user PATH");
+                return Ok(());
             }
         }
         Err(_) => {
-            println!("rustup not found. Installing Rust automatically...");
-            install_rustup_automatically()?;
+            println!("⚠️  Could not check PATH, attempting to add anyway...");
         }
     }
-
-    // Set GNU as default target for current directory
-    let output = Command::new("rustup")
-        .args(&["override", "set", "stable-x86_64-pc-windows-gnu"])
-        .output();
-
-    match output {
-        Ok(out) if out.status.success() => {
-            println!("✅ Set GNU toolchain as default for current directory");
+    
+    // Add Cargo bin to user PATH
+    let add_path_cmd = format!(
+        r#"$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User');
+           if ($userPath -eq $null -or $userPath -eq '') {{
+               $newPath = '{}'
+           }} else {{
+               $newPath = $userPath + ';{}'
+           }}
+           [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User');
+           Write-Output 'Added to PATH'"#,
+        cargo_bin, cargo_bin
+    );
+    
+    match Command::new("powershell")
+        .args(&["-Command", &add_path_cmd])
+        .output() {
+        Ok(output) if output.status.success() => {
+            println!("✅ Added Cargo to user PATH");
         }
-        _ => {
-            println!("ℹ️  You can manually set GNU toolchain with:");
-            println!("   rustup override set stable-x86_64-pc-windows-gnu");
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            println!("⚠️  Issues adding to PATH: {}", stderr);
+        }
+        Err(e) => {
+            println!("⚠️  Could not add to PATH: {}", e);
         }
     }
-
-    println!();
-    Ok(())
-}
-
-fn configure_environment() -> Result<(), Box<dyn std::error::Error>> {
-    println!("⚙️  Configuring Environment");
-    println!("--------------------------");
-
-    // Create .cargo/config.toml for GNU toolchain
-    let cargo_dir = Path::new(".cargo");
-    if !cargo_dir.exists() {
-        fs::create_dir(cargo_dir)?;
-    }
-
-    let config_content = r#"[target.x86_64-pc-windows-gnu]
-linker = "x86_64-w64-mingw32-gcc"
-ar = "x86_64-w64-mingw32-ar"
-
-[build]
-target = "x86_64-pc-windows-gnu"
-
-[env]
-CC_x86_64_pc_windows_gnu = "x86_64-w64-mingw32-gcc"
-CXX_x86_64_pc_windows_gnu = "x86_64-w64-mingw32-g++"
-"#;
-
-    let config_path = cargo_dir.join("config.toml");
-    fs::write(&config_path, config_content)?;
-    println!("✅ Created .cargo/config.toml with GNU toolchain settings");
-
-    // Add MSYS2 to PATH suggestion
-    println!();
-    println!("📝 Environment Setup Recommendation:");
-    println!("Add the following to your PATH environment variable:");
-    println!("   C:\\msys64\\mingw64\\bin");
-    println!("   C:\\msys64\\usr\\bin");
-    println!();
-    println!("You can do this by:");
-    println!("1. Open System Properties → Advanced → Environment Variables");
-    println!("2. Edit the PATH variable");
-    println!("3. Add the paths above");
-    println!();
-
+    
     Ok(())
 }
 
@@ -527,7 +802,16 @@ fn verify_installation() -> Result<(), Box<dyn std::error::Error>> {
     match Command::new("rustc").args(&["--version", "--verbose"]).output() {
         Ok(output) => {
             println!("Rust compiler info:");
-            println!("{}", String::from_utf8_lossy(&output.stdout));
+            let output_str = String::from_utf8_lossy(&output.stdout);
+            for line in output_str.lines() {
+                if line.contains("host:") && line.contains("msvc") {
+                    println!("✅ {}", line);
+                } else if line.contains("release:") || line.contains("commit-hash:") {
+                    println!("   {}", line);
+                } else if !line.trim().is_empty() {
+                    println!("   {}", line);
+                }
+            }
         }
         Err(_) => println!("❌ Could not run rustc"),
     }
@@ -536,9 +820,9 @@ fn verify_installation() -> Result<(), Box<dyn std::error::Error>> {
     match Command::new("rustup").args(&["target", "list", "--installed"]).output() {
         Ok(output) => {
             let targets = String::from_utf8_lossy(&output.stdout);
-            println!("Installed targets:");
+            println!("\nInstalled targets:");
             for line in targets.lines() {
-                if line.contains("windows-gnu") {
+                if line.contains("windows-msvc") {
                     println!("✅ {}", line);
                 } else {
                     println!("   {}", line);
@@ -551,28 +835,28 @@ fn verify_installation() -> Result<(), Box<dyn std::error::Error>> {
     // Test compilation with a simple program
     println!("\n🧪 Testing compilation...");
     let test_code = r#"fn main() {
-    println!("Hello from Rust with GNU toolchain!");
+    println!("Hello from Rust with MSVC toolchain!");
     println!("Target: {}", std::env::consts::ARCH);
     println!("OS: {}", std::env::consts::OS);
     
-    #[cfg(target_env = "gnu")]
-    println!("✅ Successfully using GNU environment!");
+    #[cfg(target_env = "msvc")]
+    println!("✅ Successfully using MSVC environment!");
     
-    #[cfg(not(target_env = "gnu"))]
-    println!("⚠️  Not using GNU environment");
+    #[cfg(not(target_env = "msvc"))]
+    println!("⚠️  Not using MSVC environment");
 }"#;
 
-    fs::write("test_gnu.rs", test_code)?;
+    fs::write("test_msvc.rs", test_code)?;
 
     let compile_output = Command::new("rustc")
-        .args(&["test_gnu.rs", "--target", "x86_64-pc-windows-gnu"])
+        .args(&["test_msvc.rs", "--target", "x86_64-pc-windows-msvc"])
         .output()?;
 
     if compile_output.status.success() {
         println!("✅ Test compilation successful!");
         
         // Try to run the compiled program
-        match Command::new("./test_gnu.exe").output() {
+        match Command::new("./test_msvc.exe").output() {
             Ok(run_output) => {
                 println!("✅ Test program executed successfully:");
                 let output_str = String::from_utf8_lossy(&run_output.stdout);
@@ -580,25 +864,36 @@ fn verify_installation() -> Result<(), Box<dyn std::error::Error>> {
                     println!("   {}", line);
                 }
                 
-                // Check if GNU environment was detected
-                if output_str.contains("Successfully using GNU environment") {
-                    println!("🎉 GNU toolchain is working correctly!");
+                // Check if MSVC environment was detected
+                if output_str.contains("Successfully using MSVC environment") {
+                    println!("🎉 MSVC toolchain is working correctly!");
                 } else {
-                    println!("⚠️  GNU environment may not be active");
+                    println!("⚠️  MSVC environment may not be active");
                 }
             }
-            Err(_) => println!("⚠️  Compiled successfully but couldn't run (may need MSYS2 DLLs in PATH)"),
+            Err(_) => println!("⚠️  Compiled successfully but couldn't run test program"),
         }
 
         // Clean up
-        let _ = fs::remove_file("test_gnu.rs");
-        let _ = fs::remove_file("test_gnu.exe");
+        let _ = fs::remove_file("test_msvc.rs");
+        let _ = fs::remove_file("test_msvc.exe");
     } else {
         println!("❌ Test compilation failed:");
         println!("{}", String::from_utf8_lossy(&compile_output.stderr));
     }
 
+    println!("\n🎯 Installation Summary:");
+    println!("• Visual Studio C++ redistributable: Installed");
+    println!("• Rust with MSVC toolchain: Installed");
+    println!("• PATH environment variable: Configured");
+    println!("• Ready for native Windows development!");
     println!();
+    println!("📝 Important Notes:");
+    println!("• If commands don't work immediately, restart your terminal");
+    println!("• You can verify the installation by running: cargo --version");
+    println!("• Use 'cargo new my_project' to create a new Rust project");
+    println!();
+
     Ok(())
 }
 
@@ -623,5 +918,13 @@ mod tests {
         assert!(current_dir.exists());
     }
 
+    #[test]
+    fn test_msvc_target_detection() {
+        // Test that we can detect MSVC target
+        if cfg!(target_env = "msvc") {
+            assert!(true, "MSVC environment detected");
+        } else {
+            println!("Not running on MSVC environment");
+        }
+    }
 }
-

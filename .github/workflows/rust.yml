@@ -170,7 +170,7 @@ jobs:
           prerelease: false
           make_latest: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.TOKEN }}
           
       - name: Upload build artifacts (for debugging)
         uses: actions/upload-artifact@v4

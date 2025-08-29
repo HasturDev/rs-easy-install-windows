@@ -1,0 +1,273 @@
+name: Build and Release Rust MSVC Installer
+
+on:
+  push:
+    branches:
+      - vs-c++-method
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - vs-c++-method
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a new release'
+        required: false
+        default: 'false'
+        type: boolean
+      release_tag:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: false
+        default: ''
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Build on Windows
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: vs-c++-method
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        targets: x86_64-pc-windows-msvc
+    
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+    
+    - name: Check code formatting
+      run: cargo fmt --all -- --check
+      continue-on-error: true
+    
+    - name: Run clippy
+      run: cargo clippy -- -D warnings
+      continue-on-error: true
+    
+    - name: Run tests
+      run: cargo test --verbose
+    
+    - name: Build release binary
+      run: cargo build --release --verbose
+    
+    - name: Verify binary exists
+      run: |
+        if (Test-Path "target/release/rs-easy-installer-windows.exe") {
+          Write-Host "✅ Binary built successfully"
+          Get-Item "target/release/rs-easy-installer-windows.exe" | Select-Object Name, Length, LastWriteTime
+        } else {
+          Write-Host "❌ Binary not found!"
+          exit 1
+        }
+      shell: powershell
+    
+    - name: Test the installer (dry run)
+      run: |
+        Write-Host "Testing installer executable..."
+        $process = Start-Process -FilePath "target/release/rs-easy-installer-windows.exe" -ArgumentList "--help" -NoNewWindow -PassThru -Wait
+        if ($process.ExitCode -eq 0) {
+          Write-Host "✅ Installer executable runs successfully"
+        } else {
+          Write-Host "⚠️  Installer may not support --help flag (exit code: $($process.ExitCode))"
+        }
+      shell: powershell
+      continue-on-error: true
+    
+    - name: Create build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: rust-msvc-installer-windows
+        path: |
+          target/release/rs-easy-installer-windows.exe
+          README.md
+          LICENSE
+        retention-days: 30
+    
+    - name: Generate build info
+      run: |
+        $buildInfo = @"
+        # Build Information
+        - **Branch**: ${{ github.ref_name }}
+        - **Commit**: ${{ github.sha }}
+        - **Build Date**: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
+        - **Rust Version**: $(rustc --version)
+        - **Target**: x86_64-pc-windows-msvc
+        - **Binary Size**: $((Get-Item "target/release/rs-easy-installer-windows.exe").Length / 1MB) MB
+        
+        ## Features
+        - ✅ Automatic Visual Studio C++ redistributable installation
+        - ✅ Rust MSVC toolchain setup
+        - ✅ PATH environment variable configuration
+        - ✅ Broken installation detection and repair
+        - ✅ User-friendly interactive prompts
+        
+        ## Usage
+        Simply download and run the executable. No additional dependencies required.
+        "@
+        
+        $buildInfo | Out-File -FilePath "build-info.md" -Encoding UTF8
+        Write-Host "Generated build info:"
+        Get-Content "build-info.md"
+      shell: powershell
+    
+    - name: Upload build info
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-info
+        path: build-info.md
+        retention-days: 30
+
+  release:
+    name: Create Release
+    runs-on: windows-latest
+    needs: build
+    if: |
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: vs-c++-method
+    
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: rust-msvc-installer-windows
+        path: ./artifacts
+    
+    - name: Download build info
+      uses: actions/download-artifact@v4
+      with:
+        name: build-info
+        path: ./artifacts
+    
+    - name: Determine release tag
+      id: release_tag
+      run: |
+        if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+          $tag = "${{ github.event.inputs.release_tag }}"
+          if ([string]::IsNullOrEmpty($tag)) {
+            $tag = "v$(Get-Date -Format 'yyyy.MM.dd')-$(Get-Date -Format 'HHmm')"
+          }
+        } else {
+          $tag = "${{ github.ref_name }}"
+        }
+        echo "tag=$tag" >> $env:GITHUB_OUTPUT
+        Write-Host "Release tag: $tag"
+      shell: powershell
+    
+    - name: Create release notes
+      run: |
+        $releaseNotes = @"
+        # Rust MSVC Installer for Windows
+        
+        An automated installer that sets up Rust with the MSVC toolchain on Windows systems.
+        
+        ## What's New in This Release
+        - Built from branch \`vs-c++-method\`
+        - Latest Visual Studio C++ redistributable integration
+        - Enhanced PATH configuration
+        - Improved broken installation detection
+        
+        ## Download
+        Download \`rs-easy-installer-windows.exe\` and run it to install Rust with MSVC toolchain.
+        
+        ## Features
+        - ✅ **Automatic Setup**: Downloads and installs Visual Studio C++ redistributable
+        - ✅ **MSVC Toolchain**: Configures Rust with native Windows development support  
+        - ✅ **Smart Detection**: Identifies and fixes broken or incompatible Rust installations
+        - ✅ **PATH Management**: Automatically configures environment variables
+        - ✅ **User Friendly**: Interactive prompts guide you through the process
+        - ✅ **No Dependencies**: Single executable with everything included
+        
+        ## System Requirements
+        - Windows 10/11 (x64)
+        - Administrator privileges (for C++ redistributable installation)
+        - Internet connection (for downloading components)
+        
+        ## Usage
+        1. Download the executable
+        2. Run as administrator (recommended)
+        3. Follow the interactive prompts
+        4. Restart your terminal when complete
+        
+        ## Verification
+        After installation, verify with:
+        \`\`\`
+        rustc --version
+        cargo --version
+        \`\`\`
+        
+        ---
+        
+        "@ + (Get-Content "./artifacts/build-info.md" -Raw)
+        
+        $releaseNotes | Out-File -FilePath "release-notes.md" -Encoding UTF8
+        Write-Host "Generated release notes:"
+        Write-Host "========================"
+        Get-Content "release-notes.md"
+      shell: powershell
+    
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.release_tag.outputs.tag }}
+        name: "Rust MSVC Installer ${{ steps.release_tag.outputs.tag }}"
+        body_path: release-notes.md
+        files: |
+          ./artifacts/rs-easy-installer-windows.exe
+          ./artifacts/README.md
+          ./artifacts/LICENSE
+        draft: false
+        prerelease: ${{ contains(steps.release_tag.outputs.tag, 'beta') || contains(steps.release_tag.outputs.tag, 'alpha') }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify:
+    name: Notification
+    runs-on: ubuntu-latest
+    needs: [build, release]
+    if: always()
+    
+    steps:
+    - name: Build Status Summary
+      run: |
+        echo "## 🦀 Rust MSVC Installer Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Branch**: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Build Status**: ${{ needs.build.result == 'success' && '✅ Success' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ needs.release.result }}" != "skipped" ]]; then
+          echo "**Release Status**: ${{ needs.release.result == 'success' && '✅ Released' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "**Release Status**: ⏭️ Skipped (no release trigger)" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📥 Downloads" >> $GITHUB_STEP_SUMMARY
+        echo "- [Build Artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ needs.release.result }}" == "success" ]]; then
+          echo "- [Latest Release](https://github.com/${{ github.repository }}/releases/latest)" >> $GITHUB_STEP_SUMMARY
+        fi
