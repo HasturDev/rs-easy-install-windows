@@ -3,12 +3,12 @@ name: Build and Release Rust MSVC Installer
 on:
   push:
     branches:
-      - "c++-version"
+      - "c**-version"
     tags:
       - 'v*'
   pull_request:
     branches:
-      - "c++-version"
+      - "c**-version"
   workflow_dispatch:
     inputs:
       create_release:
@@ -34,8 +34,6 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        ref: "c++-version"
     
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
@@ -146,8 +144,6 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        ref: "c++-version"
     
     - name: Download build artifacts
       uses: actions/download-artifact@v4
