@@ -1,20 +1,24 @@
 name: Build and Release Rust MSVC Installer
 
+permissions:
+  contents: write
+  actions: read
+
 on:
   push:
     branches:
-      - "c**-version"
+      - 'c*-version'
     tags:
       - 'v*'
   pull_request:
     branches:
-      - "c**-version"
+      - 'c*-version'
   workflow_dispatch:
     inputs:
       create_release:
         description: 'Create a new release'
         required: false
-        default: 'true'
+        default: 'false'
         type: boolean
       release_tag:
         description: 'Release tag (e.g., v1.0.0)'
@@ -34,6 +38,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        ref: vs-c++-method
     
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
@@ -138,12 +144,14 @@ jobs:
     runs-on: windows-latest
     needs: build
     if: |
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        ref: vs-c++-method
     
     - name: Download build artifacts
       uses: actions/download-artifact@v4
@@ -180,7 +188,7 @@ jobs:
         An automated installer that sets up Rust with the MSVC toolchain on Windows systems.
         
         ## What's New in This Release
-        - Built from branch \`c++-version\`
+        - Built from branch \`vs-c++-method\`
         - Latest Visual Studio C++ redistributable integration
         - Enhanced PATH configuration
         - Improved broken installation detection
@@ -230,10 +238,7 @@ jobs:
         tag_name: ${{ steps.release_tag.outputs.tag }}
         name: "Rust MSVC Installer ${{ steps.release_tag.outputs.tag }}"
         body_path: release-notes.md
-        files: |
-          ./artifacts/rs-easy-installer-windows.exe
-          ./artifacts/README.md
-          ./artifacts/LICENSE
+        files: ./artifacts/*
         draft: false
         prerelease: ${{ contains(steps.release_tag.outputs.tag, 'beta') || contains(steps.release_tag.outputs.tag, 'alpha') }}
       env:
