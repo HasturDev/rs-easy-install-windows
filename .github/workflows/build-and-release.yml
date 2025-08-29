@@ -38,8 +38,6 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        ref: c*-version
     
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
@@ -150,8 +148,6 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        ref: c*-version
     
     - name: Download build artifacts
       uses: actions/download-artifact@v4
