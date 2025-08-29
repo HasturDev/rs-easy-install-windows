@@ -72,9 +72,9 @@ jobs:
     
     - name: Verify binary exists
       run: |
-        if (Test-Path "target/release/rs-easy-installer-windows.exe") {
+        if (Test-Path "target/release/rs-easy-install-windows.exe") {
           Write-Host "✅ Binary built successfully"
-          Get-Item "target/release/rs-easy-installer-windows.exe" | Select-Object Name, Length, LastWriteTime
+          Get-Item "target/release/rs-easy-install-windows.exe" | Select-Object Name, Length, LastWriteTime
         } else {
           Write-Host "❌ Binary not found!"
           exit 1
@@ -84,7 +84,7 @@ jobs:
     - name: Test the installer (dry run)
       run: |
         Write-Host "Testing installer executable..."
-        $process = Start-Process -FilePath "target/release/rs-easy-installer-windows.exe" -ArgumentList "--help" -NoNewWindow -PassThru -Wait
+        $process = Start-Process -FilePath "target/release/rs-easy-install-windows.exe" -ArgumentList "--help" -NoNewWindow -PassThru -Wait
         if ($process.ExitCode -eq 0) {
           Write-Host "✅ Installer executable runs successfully"
         } else {
@@ -96,9 +96,9 @@ jobs:
     - name: Create build artifact
       uses: actions/upload-artifact@v4
       with:
-        name: rust-msvc-installer-windows
+        name: rust-msvc-install-windows
         path: |
-          target/release/rs-easy-installer-windows.exe
+          target/release/rs-easy-install-windows.exe
           README.md
           LICENSE
         retention-days: 30
@@ -112,7 +112,7 @@ jobs:
         - **Build Date**: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
         - **Rust Version**: $(rustc --version)
         - **Target**: x86_64-pc-windows-msvc
-        - **Binary Size**: $((Get-Item "target/release/rs-easy-installer-windows.exe").Length / 1MB) MB
+        - **Binary Size**: $((Get-Item "target/release/rs-easy-install-windows.exe").Length / 1MB) MB
         
         ## Features
         - ✅ Automatic Visual Studio C++ redistributable installation
@@ -152,7 +152,7 @@ jobs:
     - name: Download build artifacts
       uses: actions/download-artifact@v4
       with:
-        name: rust-msvc-installer-windows
+        name: rust-msvc-install-windows
         path: ./artifacts
     
     - name: Download build info
@@ -190,7 +190,7 @@ jobs:
         - Improved broken installation detection
         
         ## Download
-        Download \`rs-easy-installer-windows.exe\` and run it to install Rust with MSVC toolchain.
+        Download \`rs-easy-install-windows.exe\` and run it to install Rust with MSVC toolchain.
         
         ## Features
         - ✅ **Automatic Setup**: Downloads and installs Visual Studio C++ redistributable
